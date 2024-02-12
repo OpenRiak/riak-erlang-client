@@ -2,7 +2,8 @@
 %%
 %% riakc_pb_socket: protocol buffer client
 %%
-%% Copyright (c) 2007-2016 Basho Technologies, Inc.  All Rights Reserved.
+%% Copyright (c) 2007-2016 Basho Technologies, Inc.
+%% Copyright (c) 2023-2024 Workday, Inc.
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -24,9 +25,11 @@
 %% transport and executes the commands that can be performed over that
 %% connection.
 %% @end
-
 -module(riakc_pb_socket).
+-behaviour(gen_server).
+
 -include_lib("kernel/include/inet.hrl").
+-include_lib("kernel/include/logger.hrl").
 -include_lib("riak_pb/include/riak_pb.hrl").
 -include_lib("riak_pb/include/riak_kv_pb.hrl").
 -include_lib("riak_pb/include/riak_pb_kv_codec.hrl").
@@ -37,7 +40,6 @@
 -include_lib("riak_pb/include/riak_ts_pb.hrl").
 -include_lib("riak_pb/include/riak_ts_ttb.hrl").
 -include("riakc.hrl").
--behaviour(gen_server).
 
 -export([start_link/2, start_link/3,
          start/2, start/3,
@@ -49,6 +51,8 @@
          set_client_id/2, set_client_id/3,
          get_server_info/1, get_server_info/2,
          get/3, get/4, get/5,
+         copy/5, copy/6, copy/7,
+         move/5, move/6, move/7,
          fetch/2, fetch/3, push/3,
          peer_discovery/1,
          put/2, put/3, put/4,
@@ -349,6 +353,173 @@ get(Pid, Bucket, Key, Options, Timeout) ->
     {T, B} = maybe_bucket_type(Bucket),
     Req = get_options(Options, #rpbgetreq{type =T, bucket = B, key = Key}),
     call_infinity(Pid, {req, Req, Timeout}).
+
+
+-spec copy(
+    Pid :: pid(), SrcBucket :: riakc_obj:bucket(), SrcKey :: key(),
+    DstBucket :: riakc_obj:bucket(), DstKey :: key() | undefined )
+        -> copy_result().
+%%
+%% @doc Create a new copy of the source Bucket/Key as destination Bucket/Key.
+%%
+%% If DstKey is `undefined' a random key will be generated and returned.
+%%
+%% @equiv copy(Pid, SrcBucket, SrcKey, undefined, DstBucket, DstKey, #{})
+%%
+copy(Pid, SrcBucket, SrcKey, DstBucket, DstKey) ->
+    copy(Pid, SrcBucket, SrcKey, undefined, DstBucket, DstKey, #{}).
+
+-spec copy(
+    Pid :: pid(), SrcBucket :: riakc_obj:bucket(), SrcKey :: key(),
+    DstBucket :: riakc_obj:bucket(), DstKey :: key() | undefined,
+    CopyOpts :: copy_options() )
+        -> copy_result().
+%%
+%% @doc Create a new copy of the source Bucket/Key as destination Bucket/Key.
+%%
+%% If DstKey is `undefined' a random key will be generated and returned.
+%%
+%% @equiv copy(Pid, SrcBucket, SrcKey, undefined, DstBucket, DstKey, CopyOpts)
+%%
+copy(Pid, SrcBucket, SrcKey, DstBucket, DstKey, CopyOpts) ->
+    copy(Pid, SrcBucket, SrcKey, undefined, DstBucket, DstKey, CopyOpts).
+
+-spec copy(
+    Pid :: pid(), SrcBucket :: riakc_obj:bucket(), SrcKey :: key(),
+    SrcVClock :: riakc_obj:vclock() | undefined,
+    DstBucket :: riakc_obj:bucket(), DstKey :: key() | undefined,
+    CopyOpts :: copy_options() )
+        -> copy_result().
+%%
+%% @doc Create a new copy of the source Bucket/Key as destination Bucket/Key.
+%%
+%% If `DstKey' is `undefined' a unique unused key will be generated and
+%% returned in the result object.
+%%
+%% If SrcVClock is not `undefined' and does not match the current vclock of the
+%% source record an error will be returned.
+%%
+%% @param Pid The connected server.
+%% @param SrcBucket The source `<<bucket>>' or `{<<bucket_type>>, <<bucket>>}'.
+%% @param SrcKey The source `<<key>>'.
+%% @param SrcVClock The required vclock of the source, or `undefined' to not check.
+%% @param DstBucket The destination `<<bucket>>' or `{<<bucket_type>>, <<bucket>>}'.
+%% @param DstKey The destination `<<key>>', or `undefined' to generate a random key.
+%% @param CopyOpts Options affecting the copy operation and the Get/Put
+%%          operations it performs.
+%%
+%% @returns <dl>
+%%  <dt>`{ok, RiakObject :: riakc_obj()}'</dt><dd>
+%%      Success.
+%%      The destination record as written is returned.
+%%      The result object contains only metadata unless the `returnbody'
+%%      option was given.</dd>
+%%  <dt>`{ok, RiakObject, Details :: detail_recs()}'</dt><dd>
+%%      Success.
+%%      `RiakObject' is returned as above.
+%%      `Details' is returned if the `details' option was given.</dd>
+%%  <dt>`{error, notfound}'</dt><dd>
+%%      The source record was not found.</dd>
+%%  <dt>`{error, name_unchanged}'</dt><dd>
+%%      The source and destination names are the same.</dd>
+%%  <dt>`{error, destination_not_empty}'</dt><dd>
+%%      The destination record already exists.</dd>
+%%  <dt>`{error, src_out_of_date}'</dt><dd>
+%%      The specified SrcVClock qualifier does not match the source record.</dd>
+%%  <dt>`{error, Reason :: term()}'</dt><dd>Any other error occurred.</dd>
+%% </dl>
+copy(Pid, SrcBucket, SrcKey, SrcVClock, DstBucket, DstKey, CopyOpts) ->
+    %% CopyOpts should not contain the 'del_src' key, but make sure.
+    clone(Pid, SrcBucket, SrcKey, SrcVClock,
+        DstBucket, DstKey, maps:remove(del_src, CopyOpts)).
+
+
+-spec move(
+    Pid :: pid(), SrcBucket :: riakc_obj:bucket(), SrcKey :: key(),
+    DstBucket :: riakc_obj:bucket(), DstKey :: key() | undefined )
+        -> move_result().
+%%
+%% @doc Move the source Bucket/Key to destination Bucket/Key.
+%%
+%% If DstKey is `undefined' a random key will be generated and returned.
+%%
+%% @equiv move(Pid, SrcBucket, SrcKey, undefined, DstBucket, DstKey, #{})
+%%
+move(Pid, SrcBucket, SrcKey, DstBucket, DstKey) ->
+    move(Pid, SrcBucket, SrcKey, undefined, DstBucket, DstKey, #{}).
+
+-spec move(
+    Pid :: pid(), SrcBucket :: riakc_obj:bucket(), SrcKey :: key(),
+    DstBucket :: riakc_obj:bucket(), DstKey :: key() | undefined,
+    MoveOpts :: move_options() )
+        -> move_result().
+%%
+%% @doc Move the source Bucket/Key to destination Bucket/Key.
+%%
+%% If DstKey is `undefined' a random key will be generated and returned.
+%%
+%% @equiv move(Pid, SrcBucket, SrcKey, undefined, DstBucket, DstKey, MoveOpts)
+%%
+move(Pid, SrcBucket, SrcKey, DstBucket, DstKey, MoveOpts) ->
+    move(Pid, SrcBucket, SrcKey, undefined, DstBucket, DstKey, MoveOpts).
+
+-spec move(
+    Pid :: pid(), SrcBucket :: riakc_obj:bucket(), SrcKey :: key(),
+    SrcVClock :: riakc_obj:vclock() | undefined,
+    DstBucket :: riakc_obj:bucket(), DstKey :: key() | undefined,
+    MoveOpts :: move_options() )
+        -> move_result().
+%%
+%% @doc Move the source Bucket/Key to destination Bucket/Key.
+%%
+%% If `DstKey' is `undefined' a unique unused key will be generated and
+%% returned in the result object.
+%%
+%% If SrcVClock is not `undefined' and does not match the current vclock of the
+%% source record an error will be returned.
+%%
+%% @param Pid The connected server.
+%% @param SrcBucket The source `<<bucket>>' or `{<<bucket_type>>, <<bucket>>}'.
+%% @param SrcKey The source `<<key>>'.
+%% @param SrcVClock The required vclock of the source, or `undefined' to not check.
+%% @param DstBucket The destination `<<bucket>>' or `{<<bucket_type>>, <<bucket>>}'.
+%% @param DstKey The destination `<<key>>', or `undefined' to generate a random key.
+%% @param MoveOpts Options affecting the move operation and the Get/Put/Delete
+%%          operations it performs.
+%%
+%% @returns <dl>
+%%  <dt>`{ok, RiakObject :: riakc_obj()}'</dt><dd>
+%%      Success.
+%%      The destination record as written is returned.
+%%      The result object contains only metadata unless the `returnbody'
+%%      option was given.</dd>
+%%  <dt>`{ok, RiakObject, Details :: detail_recs()}'</dt><dd>
+%%      Success.
+%%      `RiakObject' is returned as above.
+%%      `Details' is returned if the `details' option was given.</dd>
+%%  <dt>`{ok, RiakObject, DelFailReason :: del_err_reason()}'</dt><dd>
+%%      Partial success.
+%%      The copy to the destination record succeeded but the subsequent
+%%      deletion of the source record appears to have failed <i>(depending on
+%%      options, that may or may not actually be the case)</i>.<br/>
+%%      `RiakObject' is returned as above.
+%%      `DelFailReason' is the error returned by the delete operation.</dd>
+%%  <dt>`{ok, RiakObject, DelFailReason, Details}'</dt><dd>
+%%      Partial success.
+%%      `RiakObject', `DelFailReason', and `Details' are returned as above.</dd>
+%%  <dt>`{error, notfound}'</dt><dd>
+%%      The source record was not found.</dd>
+%%  <dt>`{error, name_unchanged}'</dt><dd>
+%%      The source and destination names are the same.</dd>
+%%  <dt>`{error, destination_not_empty}'</dt><dd>
+%%      The destination record already exists.</dd>
+%%  <dt>`{error, src_out_of_date}'</dt><dd>
+%%      The specified SrcVClock qualifier does not match the source record.</dd>
+%%  <dt>`{error, Reason :: term()}'</dt><dd>Any other error occurred.</dd>
+%% </dl>
+move(Pid, SrcBucket, SrcKey, SrcVClock, DstBucket, DstKey, MoveOpts) ->
+    clone(Pid, SrcBucket, SrcKey, SrcVClock,
+        DstBucket, DstKey, MoveOpts#{del_src => true}).
 
 
 %% @doc Fetch replicated objects from a queue
@@ -1260,6 +1431,8 @@ default_timeout(OpTimeout) ->
 -spec modified_default(timeout_name()) -> timeout().
 modified_default(aaefold_timeout) ->
     ?DEFAULT_AAEFOLD_TIMEOUT;
+modified_default(clone_timeout) ->
+    ?DEFAULT_CLONE_TIMEOUT;
 modified_default(_) ->
     case application:get_env(riakc, timeout) of
         {ok, Timeout} ->
@@ -1549,7 +1722,7 @@ aae_range_tree(Pid, BucketType, KeyRange, TreeSize,
                                                         key_range = KR,
                                                         start_key = SK,
                                                         end_key = EK,
-                                                        tree_size = TreeSize,   
+                                                        tree_size = TreeSize,
                                                         segment_filter = SF,
                                                         id_filter = SFL,
                                                         filter_tree_size = FTS,
@@ -1833,13 +2006,13 @@ aae_find_tombs(Pid, BucketType, KeyRange, SegmentFilter, ModifiedRange) ->
 %% reap_tombs can be passed a change_method of count if a count of matching
 %% tombstones is all that is required - this is an alternative to running
 %% find_tombs and taking the length of the list.  To actually reap either
-%% `local` of `{ob, ID}` should be passed as the change_method.  Using `local`
+%% `local' of `{ob, ID}' should be passed as the change_method.  Using `local'
 %% will reap each tombstone from the node local to which it is discovered,
 %% whch will have the impact of distributing the reap load across the cluster
 %% and increasing parallelisation of reap activity.  Otherwise a job id can be
 %% passed an a specific reaper will be started on the co-ordinating node of the
 %% query only.  The Id will be a positive integer used to identify this reap
-%% task in logs. 
+%% task in logs.
 -spec aae_reap_tombs(pid(),
                     riakc_obj:bucket(), key_range(),
                     segment_filter(),
@@ -1913,13 +2086,13 @@ aae_reap_tombs(Pid,
 %% erase_keys can be passed a change_method of count if a count of matching
 %% keys is all that is required - this is an alternative to running
 %% find_keys and taking the length of the list.  To actually erase the object
-%% either `local` of `{ob, ID}` should be passed as the change_method.  Using
-%% `local` will delete each object from the node local to which it is
+%% either `local' of `{ob, ID}' should be passed as the change_method.  Using
+%% `local' will delete each object from the node local to which it is
 %% discovered, which will have the impact of distributing the delete load
-%% across the cluster and increasing parallelisation of delete activity. 
+%% across the cluster and increasing parallelisation of delete activity.
 %% Otherwise a job id can be passed an a specific eraser process will be
 %% started on the co-ordinating node of the query only.  The Id will be a
-%% positive integer used to identify this erase task in logs. 
+%% positive integer used to identify this erase task in logs.
 -spec aae_erase_keys(pid(),
                     riakc_obj:bucket(), key_range(),
                     segment_filter(),
@@ -2054,8 +2227,8 @@ aae_object_stats(Pid, BucketType, KeyRange, ModifiedRange) ->
                         Timeout}).
 
 %% @doc
-%% List all the buckets with references in the AAE store.  For reasonable 
-%% (e.g. < o(1000)) this should be quick and efficient unless using the
+%% List all the buckets with references in the AAE store.  For reasonable
+%% (e.g. &lt; o(1000)) this should be quick and efficient unless using the
 %% leveled_so parallel store.  A minimum n_val can be passed if known.  If
 %% there are buckets (with keys) below the minimum n_val they may not be
 %% detecting in the query.  Will default to 1.
@@ -2223,6 +2396,165 @@ code_change(_OldVsn, State, _Extra) -> {ok, State}.
 %% ====================================================================
 %% internal functions
 %% ====================================================================
+
+-type clone_options() :: #{
+    r               =>  rw_quorum(),    %% Get/Del Read quorum.
+    pr              =>  pd_quorum(),    %% Get/Del Primary Read quorum.
+    w               =>  rw_quorum(),    %% Put/Del Write quorum.
+    pw              =>  pd_quorum(),    %% Put/Del Primary Write quorum.
+    dw              =>  pd_quorum(),    %% Put/Del Durable Write quorum.
+    rw              =>  rw_quorum(),    %% Del Replicas to delete before returning.
+    n_val           =>  pos_integer(),  %% Get/Put/Del Alternate NVal.
+    basic_quorum    =>  boolean(),      %% Get Bail out early on failure.
+    sloppy_quorum   =>  boolean(),      %% Get/Put/Del Allow alternate partition(s).
+    notfound_ok     =>  boolean(),      %% Get option.
+    asis            =>  boolean(),      %% Put option.
+    sync_on_write   =>  atom(),         %% Put option.
+    timeout         =>  timeout(),      %% Total timeout for all operations.
+    recv_timeout    =>  timeout(),      %% Get/Put/Del Receive timeout.
+    del_src         =>  boolean(),      %% Move - delete source on successful copy.
+    prov_meta       =>  store | strip,  %% Add(Replace)/Remove Provenance Metadata.
+    return_body     =>  boolean(),      %% Return the full result object, not just metadata.
+    details         =>  detail_keys()   %% Return operation details from phases supporting them.
+}.
+-type clone_result() :: move_result().
+-spec clone(
+    Pid :: pid(), SrcBucket :: riakc_obj:bucket(), SrcKey :: key(),
+    SrcVClock :: riakc_obj:vclock() | undefined,
+    DstBucket :: riakc_obj:bucket(), DstKey :: key() | undefined,
+    CloneOpts :: clone_options() )
+        -> clone_result().
+%%
+%% @private Copy or Move the source Bucket/Key to destination Bucket/Key.
+%%
+%% If `DstKey' is `undefined' a unique unused key will be generated and
+%% returned in the result object.
+%%
+%% If SrcVClock is not `undefined' and does not match the current vclock of the
+%% source record an error will be returned.
+%%
+%% @param Pid The connected server.
+%% @param SrcBucket The source `<<bucket>>' or `{<<bucket_type>>, <<bucket>>}'.
+%% @param SrcKey The source `<<key>>'.
+%% @param SrcVClock The required vclock of the source, or `undefined' to not check.
+%% @param DstBucket The destination `<<bucket>>' or `{<<bucket_type>>, <<bucket>>}'.
+%% @param DstKey The destination `<<key>>', or `undefined' to generate a random key.
+%% @param CloneOpts Options affecting the clone operation and the Get/Put/Delete
+%%                  operations it performs.
+%%
+%% @returns <dl>
+%%  <dt>`{ok, RiakObject :: riakc_obj()}'</dt><dd>
+%%      Success.
+%%      The destination record as written is returned.
+%%      The result object contains only metadata unless the `returnbody'
+%%      option was given.</dd>
+%%  <dt>`{ok, RiakObject, Details :: detail_recs()()}'</dt><dd>
+%%      Success.
+%%      `RiakObject' is returned as above.
+%%      `Details' is returned if the `details' option was given.</dd>
+%%  <dt>`{ok, RiakObject, DelFailReason :: del_err_reason()}'</dt><dd>
+%%      Partial success.
+%%      The copy to the destination record succeeded but the subsequent
+%%      deletion of the source record appears to have failed <i>(depending on
+%%      options, that may or may not actually be the case)</i>.<br/>
+%%      `RiakObject' is returned as above.
+%%      `DelFailReason' is the error returned by the delete operation.</dd>
+%%  <dt>`{ok, RiakObject, DelFailReason, Details}'</dt><dd>
+%%      Partial success.
+%%      `RiakObject', `DelFailReason', and `Details' are returned as above.</dd>
+%%  <dt>`{error, notfound}'</dt><dd>
+%%      The source record was not found.</dd>
+%%  <dt>`{error, name_unchanged}'</dt><dd>
+%%      The source and destination names are the same.</dd>
+%%  <dt>`{error, destination_not_empty}'</dt><dd>
+%%      The destination record already exists.</dd>
+%%  <dt>`{error, src_out_of_date}'</dt><dd>
+%%      The specified SrcVClock qualifier does not match the source record.</dd>
+%%  <dt>`{error, Reason :: term()}'</dt><dd>Any other error occurred.</dd>
+%% </dl>
+clone(_Pid, Bucket, Key, _SrcVClock, Bucket, Key, _CloneOpts) ->
+    {error, name_unchanged};
+clone(Pid, SrcBucket, SrcKey, SrcVClock, DstBucket, DstKey, #{} = CloneOpts)
+        when    (erlang:is_binary(SrcBucket) orelse erlang:is_tuple(SrcBucket))
+        andalso erlang:is_binary(SrcKey)
+        andalso (erlang:is_binary(DstBucket) orelse erlang:is_tuple(DstBucket))
+        andalso (erlang:is_binary(DstKey) orelse DstKey =:= undefined) ->
+    {ST, SB} = maybe_bucket_type(SrcBucket),
+    {DT, DB} = maybe_bucket_type(DstBucket),
+    Req0 = #rpbclonereq{
+        src_bucket      = SB,
+        src_bucket_type = ST,
+        src_key         = SrcKey,
+        src_vclock      = SrcVClock,
+        dst_bucket      = DB,
+        dst_bucket_type = DT,
+        dst_key         = DstKey
+    },
+    Req = maps:fold(fun clone_options/3, Req0, CloneOpts),
+    %% If CloneOpts specifies timeout(s), use the longest one
+    CloneTimeout = maps:get(timeout, CloneOpts, undefined),
+    RecvTimeout = maps:get(recv_timeout, CloneOpts, undefined),
+    CallTimeout = if
+        CloneTimeout =:= infinity ; RecvTimeout =:= infinity ->
+            infinity;
+        erlang:is_integer(CloneTimeout) , erlang:is_integer(RecvTimeout) ->
+            erlang:max(CloneTimeout, RecvTimeout);
+        erlang:is_integer(CloneTimeout) ->
+            CloneTimeout;
+        erlang:is_integer(RecvTimeout) ->
+            RecvTimeout;
+        true ->
+            default_timeout(clone_timeout)
+    end,
+    call_infinity(Pid, {req, Req, CallTimeout}).
+
+-spec clone_options(
+    Key :: atom(), Val :: term(), Acc :: #rpbclonereq{})
+        -> #rpbclonereq{}.
+%% @hidden
+clone_options(_Key, undefined, Req) ->
+    Req;
+clone_options(r, Val, Req) ->
+    Req#rpbclonereq{r = riak_pb_kv_codec:encode_quorum(Val)};
+clone_options(pr, Val, Req) ->
+    Req#rpbclonereq{pr = riak_pb_kv_codec:encode_quorum(Val)};
+clone_options(w, Val, Req) ->
+    Req#rpbclonereq{w = riak_pb_kv_codec:encode_quorum(Val)};
+clone_options(pw, Val, Req) ->
+    Req#rpbclonereq{pw = riak_pb_kv_codec:encode_quorum(Val)};
+clone_options(dw, Val, Req) ->
+    Req#rpbclonereq{dw = riak_pb_kv_codec:encode_quorum(Val)};
+clone_options(rw, Val, Req) ->
+    Req#rpbclonereq{rw = riak_pb_kv_codec:encode_quorum(Val)};
+clone_options(n_val, Val, Req) when is_integer(Val), Val > 0 ->
+    Req#rpbclonereq{n_val = Val};
+clone_options(timeout, Val, Req) ->
+    Req#rpbclonereq{timeout = riak_pb_codec:encode_timeout(Val)};
+clone_options(recv_timeout, Val, Req) ->
+    Req#rpbclonereq{recv_timeout = riak_pb_codec:encode_timeout(Val)};
+clone_options(return_body, Val, Req) when is_boolean(Val) ->
+    Req#rpbclonereq{return_body = Val};
+clone_options(del_src, Val, Req) when is_boolean(Val) ->
+    Req#rpbclonereq{delete_src = Val};
+clone_options(basic_quorum, Val, Req) when is_boolean(Val) ->
+    Req#rpbclonereq{basic_quorum = Val};
+clone_options(sloppy_quorum, Val, Req) when is_boolean(Val) ->
+    Req#rpbclonereq{sloppy_quorum = Val};
+clone_options(notfound_ok, Val, Req) when is_boolean(Val) ->
+    Req#rpbclonereq{notfound_ok = Val};
+clone_options(asis, Val, Req) when is_boolean(Val) ->
+    Req#rpbclonereq{asis = Val};
+clone_options(sync_on_write, Val, Req) when is_atom(Val) ->
+    Req#rpbclonereq{sync_on_write = atom_to_binary(Val, latin1)};
+clone_options(details, [_|_] = Keys, Req) ->
+    Details = lists:map(fun(K) -> atom_to_binary(K, latin1) end, Keys),
+    Req#rpbclonereq{details = Details};
+clone_options(prov_meta, store, Req) ->
+    Req#rpbclonereq{dst_prov_meta = <<"store">>};
+clone_options(prov_meta, strip, Req) ->
+    Req#rpbclonereq{dst_prov_meta = <<"strip">>};
+clone_options(Key, Val, Req) ->
+    erlang:error(badarg, [Key, Val, Req]).
 
 %% @private
 decode(?TTB_MSG_CODE, MsgData) ->
@@ -2497,7 +2829,7 @@ process_response(#request{msg = #rpbfetchreq{}},
                  #rpbfetchresp{queue_empty = true}, State) ->
     {reply, {ok, queue_empty}, State};
 process_response(#request{msg = #rpbfetchreq{}},
-                 #rpbfetchresp{deleted = true, 
+                 #rpbfetchresp{deleted = true,
                                 crc_check = CRC,
                                 replencoded_object = ObjBin,
                                 deleted_vclock = VclockBin,
@@ -2507,7 +2839,7 @@ process_response(#request{msg = #rpbfetchreq{}},
         {crc_check(CRC,ObjBin), {deleted, VclockBin, ObjBin}},
         State};
 process_response(#request{msg = #rpbfetchreq{}},
-                 #rpbfetchresp{deleted = true, 
+                 #rpbfetchresp{deleted = true,
                                 crc_check = CRC,
                                 replencoded_object = ObjBin,
                                 deleted_vclock = VclockBin,
@@ -2530,21 +2862,21 @@ process_response(#request{msg = #rpbfetchreq{}},
     {reply, {crc_check(CRC,ObjBin), {ObjBin, SegID, SegHash}}, State};
 
 %% rpbpushreq
-process_response(#request{msg = #rpbpushreq{queuename = Q}}, 
+process_response(#request{msg = #rpbpushreq{queuename = Q}},
                     #rpbpushresp{queue_exists = true,
                                     queuename = Q,
                                     foldq_length = FL,
                                     fsync_length = FSL,
                                     realt_length = RTL}, State) ->
     {reply,
-        {ok, 
+        {ok,
             iolist_to_binary(
                 io_lib:format("Queue ~s: ~w ~w ~w", [Q, FL, FSL, RTL]))},
         State};
-process_response(#request{msg = #rpbpushreq{queuename = Q}}, 
+process_response(#request{msg = #rpbpushreq{queuename = Q}},
                     #rpbpushresp{queue_exists = false}, State) ->
     {reply,
-        {ok, 
+        {ok,
             iolist_to_binary(io_lib:format("No queue ~s", [Q]))},
         State};
 
@@ -2586,6 +2918,44 @@ process_response(#request{msg = #rpbputreq{type = Type, bucket = Bucket, key = K
                 end,
     B = maybe_make_bucket_type(Type, Bucket),
     {reply, {ok, riakc_obj:new_obj(B, ReturnKey, Vclock, Contents)}, State};
+
+process_response(#request{msg = #rpbclonereq{}},
+        #rpbcloneresp{details = [_|_] = EncDetails, error = EncError},
+        State ) when erlang:is_binary(EncError) ->
+    Reason = riak_pb_codec:decode_etf_binary(EncError),
+    Details = riak_pb_codec:decode_rich_pairs(EncDetails),
+    {reply, {error, Reason, Details}, State};
+process_response(#request{msg = #rpbclonereq{}},
+        #rpbcloneresp{error = EncError},
+        State ) when erlang:is_binary(EncError) ->
+    Reason = riak_pb_codec:decode_etf_binary(EncError),
+    {reply, {error, Reason}, State};
+process_response(#request{msg =
+        #rpbclonereq{dst_bucket = DstB, dst_bucket_type = DstT, dst_key = DstK}},
+        #rpbcloneresp{
+            content = EncContent, vclock = VClock, key = GenK,
+            details = EncDetails, del_fail = EncDelFail},
+        State ) ->
+    Bucket = maybe_make_bucket_type(DstT, DstB),
+    Key = case DstK of
+        undefined -> GenK;
+        _ -> DstK
+    end,
+    Contents = riak_pb_kv_codec:decode_contents(EncContent),
+    RObj = riakc_obj:new_obj(Bucket, Key, VClock, Contents),
+    Details = riak_pb_codec:decode_rich_pairs(EncDetails),
+    DelFail = riak_pb_codec:decode_etf_binary(EncDelFail),
+    Result = case {DelFail, Details} of
+        {undefined, undefined} ->
+            {ok, RObj};
+        {_, undefined} ->
+            {ok, RObj, DelFail};
+        {undefined, _} ->
+            {ok, RObj, Details};
+        _ ->
+            {ok, RObj, DelFail, Details}
+    end,
+    {reply, Result, State};
 
 process_response(#request{msg = #rpbdelreq{}},
                  rpbdelresp, State) ->
@@ -2778,10 +3148,10 @@ process_response(#request{msg = #rpbaaefoldmergetreesrangereq{tree_size = TS}},
                                         level_one = Root,
                                         level_two = Branches},
                     State) ->
-    TreeToImport = 
-        {struct, 
+    TreeToImport =
+        {struct,
             [{<<"level1">>,
-                    base64:encode_to_string(Root)}, 
+                    base64:encode_to_string(Root)},
                 {<<"level2">>,
                     {struct,
                         lists:map(fun encode_branch/1, Branches)}}]},
@@ -3006,7 +3376,7 @@ unpack_keyclock_fun(RpbKeysClock) ->
 unpack_keycount_fun(RpbKeysCount) ->
     case RpbKeysCount#rpbkeyscount.order of
         undefined ->
-            {RpbKeysCount#rpbkeyscount.tag, 
+            {RpbKeysCount#rpbkeyscount.tag,
                 RpbKeysCount#rpbkeyscount.count};
         Order ->
             {RpbKeysCount#rpbkeyscount.tag,
@@ -3021,7 +3391,7 @@ stats_output(Stats) ->
     Output =
         lists:sort(lists:foldr(fun stats_fold_fun/2, [], lists:sort(Stats))),
     lists:map(fun sort_nested/1, Output).
-    
+
 
 sort_nested({K, L}) when is_list(L) ->
     L0 =
@@ -3038,7 +3408,7 @@ stats_fold_fun({K, O, C}, Acc) ->
         {K, L} ->
             lists:keyreplace(K, 1, Acc, {K, lists:sort([{O, C}|L])})
     end;
-stats_fold_fun({K, C}, Acc) -> 
+stats_fold_fun({K, C}, Acc) ->
     [{K, C}|Acc].
 
 
@@ -3564,7 +3934,7 @@ increase_reconnect_interval_test(State) ->
 
 stats_output_test() ->
     %% Raw details returned as in the mapped protocol buffer records
-    RawStats = 
+    RawStats =
         [{<<"total_count">>,10000},
             {<<"total_size">>,1218213},
             {<<"sizes">>,2,9994},{<<"sizes">>,3,6},
@@ -3573,7 +3943,7 @@ stats_output_test() ->
             {<<"siblings">>,7,10},{<<"siblings">>,8,10},{<<"siblings">>,9,10},
             {<<"siblings">>,10,10},{<<"siblings">>,11,10}],
     %% What the HTTP client would return for the equivalent
-    ExpectedStats = 
+    ExpectedStats =
         lists:sort(
             [{<<"siblings">>,
                 [{<<"11">>,10},{<<"10">>,10},{<<"9">>,10},{<<"8">>,10},
