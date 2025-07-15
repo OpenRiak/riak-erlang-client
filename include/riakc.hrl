@@ -74,7 +74,9 @@
         {search, boolean()} |
         {chash_keyfun, {atom(), atom()}} |
         {linkfun, {modfun, atom(), atom()}} |
-        {precommit|postcommit, [term()]}.
+        {precommit|postcommit, [term()]} |
+        {sync_on_write, all | backend | one} |
+        {aae_tree_exclude, boolean()}.
         %% Bucket property definitions (incomplete).
 -type bucket_props() :: [bucket_prop()]. %% Bucket properties
 -type quorum() :: non_neg_integer() | one | all | quorum | default.  %% A quorum setting for get/put/delete requests.
