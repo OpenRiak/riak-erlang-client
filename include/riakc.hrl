@@ -123,6 +123,7 @@
         {sloppy_quorum, boolean()} |
         {timeout, pos_integer()} |
         {node_confirms, non_neg_integer()} |
+        {sync_on_write, all|backend|one} |
         asis.
 %% Valid request options for put requests. `return_body' returns the
 %% entire result of storing the object. `return_head' returns the
