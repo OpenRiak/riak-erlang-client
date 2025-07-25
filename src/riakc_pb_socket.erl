@@ -428,14 +428,24 @@ put(Pid, Obj, Options) ->
 -spec put(pid(), riakc_obj(), put_options(), timeout()) ->
                  ok | {ok, riakc_obj()} | riakc_obj() | {ok, key()} | {error, term()}.
 put(Pid, Obj, Options, Timeout) ->
-    Content = riak_pb_kv_codec:encode_content({riakc_obj:get_update_metadata(Obj),
-                                               riakc_obj:get_update_value(Obj)}),
-    Req = put_options(Options,
-                      #rpbputreq{bucket = riakc_obj:only_bucket(Obj),
-                                 type = riakc_obj:bucket_type(Obj),
-                                 key = riakc_obj:key(Obj),
-                                 vclock = riakc_obj:vclock(Obj),
-                                 content = Content}),
+    Content =
+        riak_pb_kv_codec:encode_content(
+            {
+                riakc_obj:get_update_metadata(Obj),
+                riakc_obj:get_update_value(Obj)
+            }
+        ),
+    Req =
+        put_options(
+            Options,
+        #rpbputreq{
+            bucket = riakc_obj:only_bucket(Obj),
+            type = riakc_obj:bucket_type(Obj),
+            key = riakc_obj:key(Obj),
+            vclock = riakc_obj:vclock(Obj),
+            content = Content
+        }
+    ),
     call_infinity(Pid, {req, Req, Timeout}).
 
 %% @doc Delete the key/value
@@ -2345,6 +2355,9 @@ put_options([{sloppy_quorum, Bool} | Rest], Req)
 put_options([{node_confirms, NodeConfirms} | Rest], Req) ->
     NCOpt = riak_pb_kv_codec:encode_quorum(NodeConfirms),
     put_options(Rest, Req#rpbputreq{node_confirms = NCOpt});
+put_options([{sync_on_write, SyncOnWrite} | Rest], Req)
+        when SyncOnWrite == backend; SyncOnWrite == one; SyncOnWrite == all ->
+    put_options(Rest, Req#rpbputreq{sync_on_write = SyncOnWrite});
 put_options([{_, _} | _Rest], _Req) ->
     erlang:error(badarg).
 

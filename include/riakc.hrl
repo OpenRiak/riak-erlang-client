@@ -74,7 +74,9 @@
         {search, boolean()} |
         {chash_keyfun, {atom(), atom()}} |
         {linkfun, {modfun, atom(), atom()}} |
-        {precommit|postcommit, [term()]}.
+        {precommit|postcommit, [term()]} |
+        {sync_on_write, all | backend | one} |
+        {aae_tree_exclude, boolean()}.
         %% Bucket property definitions (incomplete).
 -type bucket_props() :: [bucket_prop()]. %% Bucket properties
 -type quorum() :: non_neg_integer() | one | all | quorum | default.  %% A quorum setting for get/put/delete requests.
@@ -121,6 +123,7 @@
         {sloppy_quorum, boolean()} |
         {timeout, pos_integer()} |
         {node_confirms, non_neg_integer()} |
+        {sync_on_write, all|backend|one} |
         asis.
 %% Valid request options for put requests. `return_body' returns the
 %% entire result of storing the object. `return_head' returns the
