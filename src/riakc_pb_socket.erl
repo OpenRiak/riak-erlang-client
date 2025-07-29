@@ -2059,18 +2059,19 @@ aae_object_stats(Pid, BucketType, KeyRange, ModifiedRange) ->
 %% leveled_so parallel store.  A minimum n_val can be passed if known.  If
 %% there are buckets (with keys) below the minimum n_val they may not be
 %% detecting in the query.  Will default to 1.
--spec aae_list_buckets(pid()) -> list(riakc_obj:bucket()).
+-spec aae_list_buckets(pid()) -> {ok, list(riakc_obj:bucket())} | {error, any()}.
 aae_list_buckets(Pid) ->
     Timeout = default_timeout(aaefold_timeout),
     call_infinity(Pid, {req, #rpbaaefoldlistbucketsreq{}, Timeout}).
 
--spec aae_list_buckets(pid(), pos_integer()) -> list(riakc_obj:bucket()).
+-spec aae_list_buckets(
+    pid(), pos_integer()) -> {ok, list(riakc_obj:bucket())} | {error, any()}.
 aae_list_buckets(Pid, MinNVal) when is_integer(MinNVal), MinNVal > 0 ->
     Timeout = default_timeout(aaefold_timeout),
-    call_infinity(Pid,
-                    {req,
-                        #rpbaaefoldlistbucketsreq{n_val = MinNVal},
-                        Timeout}).
+    call_infinity(
+        Pid,
+        {req, #rpbaaefoldlistbucketsreq{n_val = MinNVal}, Timeout}
+    ).
 
 %% ====================================================================
 %% gen_server callbacks
