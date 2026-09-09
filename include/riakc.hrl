@@ -2,7 +2,8 @@
 %%
 %% riakc: protocol buffer client
 %%
-%% Copyright (c) 2007-2012 Basho Technologies, Inc.  All Rights Reserved.
+%% Copyright (c) 2007-2016 Basho Technologies, Inc.
+%% Copyright (c) 2024 Workday, Inc.
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -24,6 +25,7 @@
 -define(PROTO_MINOR, 0).
 -define(DEFAULT_PB_TIMEOUT, 60000).
 -define(DEFAULT_AAEFOLD_TIMEOUT, 3600000).
+-define(DEFAULT_CLONE_TIMEOUT, (?DEFAULT_PB_TIMEOUT * 2)).
 -define(FIRST_RECONNECT_INTERVAL, 100).
 -define(MAX_RECONNECT_INTERVAL, 30000).
 
@@ -80,6 +82,8 @@
         %% Bucket property definitions (incomplete).
 -type bucket_props() :: [bucket_prop()]. %% Bucket properties
 -type quorum() :: non_neg_integer() | one | all | quorum | default.  %% A quorum setting for get/put/delete requests.
+-type rw_quorum() :: pos_integer() | one | quorum | all | default.    %% `r', `w', or `rw' value.
+-type pd_quorum() :: non_neg_integer() | one | quorum | all | default. %% `pr', `pw', or `dw' value.
 -type read_quorum() ::
         {r, ReadQuorum::quorum()} |
         {pr, PrimaryReadQuorum::quorum()}.
@@ -133,6 +137,76 @@
 %% object already exists in Riak.
 -type get_options() :: [get_option()]. %% A list of options for a get request.
 -type put_options() :: [put_option()]. %% A list of options for a put request.
+
+%%
+%% Types SHOULD mirror those in riak_kv/riak_client, but those modules aren't
+%% visible here so we punt.
+%%
+-type del_err_reason() ::
+    notfound | timeout | too_many_fails | {n_val_violation, pos_integer()} | term().
+-type get_err_reason() ::
+    notfound | timeout | {deleted, riakc_obj:vclock()} | {n_val_violation, pos_integer()} |
+    {r_val_unsatisfied, pos_integer(), non_neg_integer()} | term().
+-type put_err_reason() ::
+    notfound | timeout | too_many_fails | {n_val_violation, pos_integer()} | term().
+
+-type detail_keys() :: list(timing | vnodes | boolean()).
+-type detail_rec() :: {atom(), term()}.
+-type detail_recs() :: list(detail_rec()).
+
+-type copy_options() :: #{
+    r               =>  rw_quorum(),    %% Get Read quorum.
+    pr              =>  pd_quorum(),    %% Get Primary Read quorum.
+    w               =>  rw_quorum(),    %% Put Write quorum.
+    pw              =>  pd_quorum(),    %% Put Primary Write quorum.
+    dw              =>  pd_quorum(),    %% Put Durable Write quorum.
+    n_val           =>  pos_integer(),  %% Get/Put Alternate NVal.
+    basic_quorum    =>  boolean(),      %% Get Bail out early on failure.
+    sloppy_quorum   =>  boolean(),      %% Get/Put Allow alternate partition(s).
+    notfound_ok     =>  boolean(),      %% Get option
+    asis            =>  boolean(),      %% Put option
+    sync_on_write   =>  atom(),         %% Put option
+    timeout         =>  timeout(),      %% Total timeout for all operations.
+    recv_timeout    =>  timeout(),      %% Get/Put Receive timeout.
+    prov_meta       =>  store | strip,  %% Add(Replace)/Remove Provenance Metadata.
+    return_body     =>  boolean(),      %% Return the full result object, not just metadata.
+    details         =>  detail_keys()   %% Return operation details from phases supporting them.
+}.
+-type move_options() :: #{
+    r               =>  rw_quorum(),    %% Get/Del Read quorum.
+    pr              =>  pd_quorum(),    %% Get/Del Primary Read quorum.
+    w               =>  rw_quorum(),    %% Put/Del Write quorum.
+    pw              =>  pd_quorum(),    %% Put/Del Primary Write quorum.
+    dw              =>  pd_quorum(),    %% Put/Del Durable Write quorum.
+    rw              =>  rw_quorum(),    %% Del Replicas to delete before returning.
+    n_val           =>  pos_integer(),  %% Get/Put/Del Alternate NVal.
+    basic_quorum    =>  boolean(),      %% Get Bail out early on failure.
+    sloppy_quorum   =>  boolean(),      %% Get/Put/Del Allow alternate partition(s).
+    notfound_ok     =>  boolean(),      %% Get option
+    asis            =>  boolean(),      %% Put option
+    sync_on_write   =>  atom(),         %% Put option
+    timeout         =>  timeout(),      %% Total timeout for all operations.
+    recv_timeout    =>  timeout(),      %% Get/Put/Del Receive timeout.
+    prov_meta       =>  store | strip,  %% Add(Replace)/Remove Provenance Metadata.
+    return_body     =>  boolean(),      %% Return the full result object, not just metadata.
+    details         =>  detail_keys()   %% Return operation details from phases supporting them.
+}.
+
+-type copy_err_reason() ::
+    destination_not_empty | name_unchanged | src_out_of_date |
+    get_err_reason() | put_err_reason().
+-type copy_error() :: {error, copy_err_reason()}.
+-type copy_result() ::
+    {ok, riakc_obj()} | {ok, riakc_obj(), detail_recs()} | copy_error().
+
+-type move_err_reason() :: copy_err_reason().
+-type move_error() :: {error, move_err_reason()}.
+-type move_result() ::
+    {ok, riakc_obj()} | {ok, riakc_obj(), detail_recs()} |
+    {ok, riakc_obj(), del_err_reason()} |
+    {ok, riakc_obj(), del_err_reason(), detail_recs()} |
+    move_error().
+
 -type search_options() :: [search_option()]. %% A list of options for a search request.
 -type delete_options() :: [delete_option()]. %% A list of options for a delete request.
 -type mapred_queryterm() :: 
@@ -189,7 +263,7 @@
                         mapred_stream_call_timeout | mapred_bucket_timeout |
                         mapred_bucket_call_timeout | mapred_bucket_stream_call_timeout |
                         search_timeout | search_call_timeout | aaefold_timeout |
-                        timeout.
+                        clone_timeout | timeout.
 
 -type continuation() :: 'undefined' | binary().
 -type secondary_index_id() :: {binary_index, string()} | {integer_index, string()}.
