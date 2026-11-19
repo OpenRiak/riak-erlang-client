@@ -126,7 +126,7 @@
 -type index_opt() :: {timeout, timeout()} |
                      {call_timeout, timeout()} |
                      {stream, boolean()} | stream |
-                     {continuation, binary()} |
+                     {continuation, continuation()} |
                      {pagination_sort, boolean()} | pagination_sort |
                      {max_results, non_neg_integer() | all}.
 -type index_opts() :: [index_opt()].
