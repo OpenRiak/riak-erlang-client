@@ -84,7 +84,9 @@
 -type vclock() :: binary(). %% An opaque vector clock
 -type content_type() :: string(). %% The media type of a value
 -type value() :: binary(). %% An opaque value
--type contents() :: [{metadata(), value()}]. %% All metadata/value pairs in a `riakc_obj'.
+-type contents() :: [{metadata(), value()}].
+    %% All metadata/value pairs in a `riakc_obj'.
+-type decoded_contents() :: [{metadata_as_list(), value()}].
 -type binary_index_id() :: {binary_index, string()}.
 -type binary_index_value() :: binary().
 -type binary_index() :: {binary_index_id(), [binary_index_value()]}.
@@ -97,11 +99,8 @@
 -type metadata_key() :: binary().
 -type metadata_value() :: binary().
 -type metadata_entry() :: {metadata_key(), metadata_value()}.
--ifdef(pre17).
--type metadata() :: dict(). %% Value metadata
--else.
 -type metadata() :: dict:dict(metadata_key(), metadata_value()).
--endif.
+-type metadata_as_list() :: [{metadata_key(), metadata_value()}].
 -type tag() :: binary().
 -type link() :: {tag(), [id()]}.
 
@@ -631,9 +630,28 @@ add_link(MD, [{T, IdList} | Rest]) ->
 %%       set_update_[value|metadata]() + apply_updates() method for changing
 %%       object contents.
 %% @private
--spec new_obj(bucket(), key(), vclock(), contents()) -> riakc_obj().
+-spec new_obj(
+    bucket(), key(), vclock(), contents()|decoded_contents()) ->
+        riakc_obj().
 new_obj(Bucket, Key, Vclock, Contents) ->
-    #riakc_obj{bucket = Bucket, key = Key, vclock = Vclock, contents = Contents}.
+    LegacyContents =
+        lists:map(
+            fun({M, V}) ->
+                case M of
+                    M when is_list(M) ->
+                        {dict:from_list(M), V};
+                    M ->
+                        {M, V}
+                end
+            end,
+            Contents
+        ),
+    #riakc_obj{
+        bucket = Bucket,
+        key = Key,
+        vclock = Vclock,
+        contents = LegacyContents
+    }.
 
 %% @doc  INTERNAL USE ONLY.  Convert binary secondary index name to index id tuple.
 %% @private
