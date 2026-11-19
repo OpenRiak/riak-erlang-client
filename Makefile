@@ -1,16 +1,19 @@
-.PHONY: all lint clean compile deps distclean release docs
+.PHONY: all lint clean compile distclean docs
 
-REBAR=./rebar3
+REBAR ?= ../riak/rebar3
 
-all: deps compile
+all: compile
 
 lint: xref dialyzer
 
-compile: deps
+compile:
 	$(REBAR) compile
 
-deps:
-	$(REBAR) get-deps
+dialyzer:
+	$(REBAR) dialyzer
+
+xref:
+	$(REBAR) xref
 
 clean:
 	$(REBAR) clean
